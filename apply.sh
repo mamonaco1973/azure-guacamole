@@ -1,103 +1,110 @@
 #!/bin/bash
 # ==============================================================================
-# Build Script for Lubuntu XRDP Project on Azure
-# Purpose:
-#   - Validates the environment and prerequisites before deployment.
-#   - Deploys the project in two phases:
-#       1. Directory layer: Key Vault, Mini-AD and base infra.
-#       2. Server layer: Lubuntu VM, AD Admin VM, and secrets.
-#   - Uses Packer to build the Lubuntu image before server deployment.
+# apply.sh - Guacamole + Active Directory on Azure: build
+# ------------------------------------------------------------------------------
+# Three phases:
+#   1. 01-directory: VNet, NSGs, NAT gateway, Key Vault, mini-AD (Samba DC).
+#   2. 02-packer:    the Lubuntu + XRDP managed image.
+#   3. 03-servers:   the App Gateway, Guacamole, and the Windows and Lubuntu
+#                    servers.
+# Then validate.sh checks the result.
+#
 # Notes:
-#   - Assumes Azure CLI and Terraform are installed and logged in.
-#   - Assumes check_env.sh validates required vars and tools.
-#   - Key Vault name created in Phase 1 is auto-discovered for Phase 2.
+#   - Each run builds a fresh image; phase 3 uses the newest one, and
+#     destroy.sh deletes them all.
+#   - The Key Vault name (random suffix) is discovered after phase 1.
+#   - Phase 3 retries (up to 3 attempts) if Azure fails the App Gateway.
 # ==============================================================================
 
-set -e
+set -euo pipefail
+cd "$(dirname "$0")"
+
+NETWORK_RG="guacamole-network-rg"
+PROJECT_RG="guacamole-project-rg"
+APP_GATEWAY="guacamole-app-gateway"
 
 # ------------------------------------------------------------------------------
-# Pre-flight check: validate environment with check_env.sh
+# Pre-flight check: tools, ARM_* variables, Azure login
 # ------------------------------------------------------------------------------
 ./check_env.sh
-if [ $? -ne 0 ]; then
-  echo "ERROR: Environment check failed."
-  exit 1
-fi
 
 # ------------------------------------------------------------------------------
-# Deploy directory layer (Mini-AD, Key Vault and base infra)
+# Phase 1: directory layer (network, Key Vault, mini-AD)
 # ------------------------------------------------------------------------------
+echo "NOTE: Building the network, Key Vault and mini-AD..."
 cd 01-directory
-
 terraform init
 terraform apply -auto-approve
-if [ $? -ne 0 ]; then
-  echo "ERROR: Terraform apply failed in 01-directory."
-  exit 1
-fi
-
 cd ..
 
 # ------------------------------------------------------------------------------
-# Build Lubuntu image with Packer
+# Phase 2: Lubuntu image (Packer builds in its own temporary VNet)
 # ------------------------------------------------------------------------------
+echo "NOTE: Building the Lubuntu + XRDP image with Packer..."
 cd 02-packer
-
 packer init .
 packer build \
- -var="client_id=$ARM_CLIENT_ID" \
- -var="client_secret=$ARM_CLIENT_SECRET" \
- -var="subscription_id=$ARM_SUBSCRIPTION_ID" \
- -var="tenant_id=$ARM_TENANT_ID" \
- -var="resource_group=lubuntu-project-rg" \
- lubuntu_image.pkr.hcl
-
+  -var="client_id=$ARM_CLIENT_ID" \
+  -var="client_secret=$ARM_CLIENT_SECRET" \
+  -var="subscription_id=$ARM_SUBSCRIPTION_ID" \
+  -var="tenant_id=$ARM_TENANT_ID" \
+  -var="resource_group=${PROJECT_RG}" \
+  lubuntu.pkr.hcl
 cd ..
 
 # ------------------------------------------------------------------------------
-# Deploy server layer (AD Admin VM and Lubuntu VM)
-# ------------------------------------------------------------------------------
-cd 03-servers
-
-# ------------------------------------------------------------------------------
-# Fetch latest Lubuntu image from packer resource group
+# Phase 3: App Gateway, Guacamole and the servers
 # ------------------------------------------------------------------------------
 lubuntu_image_name=$(az image list \
-  --resource-group lubuntu-project-rg \
+  --resource-group "${PROJECT_RG}" \
   --query "[?starts_with(name, 'lubuntu_image')]|sort_by(@, &name)[-1].name" \
   --output tsv)
-
-echo "NOTE: Using latest Lubuntu image: $lubuntu_image_name"
-
-if [ -z "$lubuntu_image_name" ]; then
-  echo "ERROR: No Lubuntu image found in lubuntu-project-rg."
+if [ -z "${lubuntu_image_name}" ]; then
+  echo "ERROR: No Lubuntu image found in ${PROJECT_RG}."
   exit 1
 fi
+echo "NOTE: Using latest Lubuntu image: ${lubuntu_image_name}"
 
-# ------------------------------------------------------------------------------
-# Discover Key Vault created in Phase 1
-# ------------------------------------------------------------------------------
 vault=$(az keyvault list \
-  --resource-group lubuntu-network-rg \
+  --resource-group "${NETWORK_RG}" \
   --query "[?starts_with(name, 'ad-key-vault')].name | [0]" \
   --output tsv)
+echo "NOTE: Using Key Vault: ${vault}"
 
-echo "NOTE: Using Key Vault: $vault"
-
-# ------------------------------------------------------------------------------
-# Deploy Server layer with Terraform
-# ------------------------------------------------------------------------------
-
+# Azure occasionally fails an App Gateway create with a bare
+# InternalServerError after several minutes, leaving a "Failed" gateway that
+# Terraform doesn't track (a rerun then stops at "already exists"). When that
+# is why phase 3 failed, delete the gateway and try again; any other failure
+# stops the build as usual.
+echo "NOTE: Building the App Gateway, Guacamole and servers..."
+cd 03-servers
 terraform init
-terraform apply \
-  -var="vault_name=$vault" \
-  -var="lubuntu_image_name=$lubuntu_image_name" \
-  -auto-approve
+for attempt in 1 2 3; do
+  if terraform apply \
+    -var="vault_name=${vault}" \
+    -var="lubuntu_image_name=${lubuntu_image_name}" \
+    -auto-approve; then
+    break
+  fi
 
+  gateway_state=$(az network application-gateway show \
+    --resource-group "${PROJECT_RG}" --name "${APP_GATEWAY}" \
+    --query provisioningState --output tsv 2>/dev/null || true)
+  if [ "${gateway_state}" != "Failed" ] || [ "${attempt}" -eq 3 ]; then
+    echo "ERROR: Phase 3 failed (attempt ${attempt}, App Gateway: ${gateway_state:-not created})."
+    exit 1
+  fi
+
+  echo "WARNING: Azure failed the App Gateway (attempt ${attempt}); deleting it and retrying..."
+  az network application-gateway delete \
+    --resource-group "${PROJECT_RG}" --name "${APP_GATEWAY}"
+done
 cd ..
 
 # ------------------------------------------------------------------------------
-# Run Build Validation
+# Build validation
 # ------------------------------------------------------------------------------
-
+echo "NOTE: Running build validation..."
 ./validate.sh
+
+echo "NOTE: Infrastructure build complete."

@@ -34,7 +34,7 @@ data "azurerm_client_config" "current" {}
 variable "resource_group_name" {
   description = "Name of the Azure Resource Group for the project"
   type        = string
-  default     = "lubuntu-project-rg"
+  default     = "guacamole-project-rg"
 }
 
 # ------------------------------------------------------------------------------
@@ -43,7 +43,7 @@ variable "resource_group_name" {
 variable "network_resource_group_name" {
   description = "Name of the Resource Group for networking resources"
   type        = string
-  default     = "lubuntu-network-rg"
+  default     = "guacamole-network-rg"
 }
 
 # ------------------------------------------------------------------------------
@@ -57,7 +57,7 @@ variable "vault_name" {
 # ------------------------------------------------------------------------------
 # Load details for the main project resource group
 # ------------------------------------------------------------------------------
-data "azurerm_resource_group" "lubuntu" {
+data "azurerm_resource_group" "servers" {
   name = var.resource_group_name
 }
 
@@ -94,7 +94,35 @@ data "azurerm_key_vault" "ad_key_vault" {
 }
 
 # ------------------------------------------------------------------------------
-# Input variable: name of the custom Xubuntu image in Azure
+# App Gateway subnet (10.0.1.0/24), created empty in 01-directory
+# ------------------------------------------------------------------------------
+data "azurerm_subnet" "app_gateway_subnet" {
+  name                 = "app-gateway-subnet"
+  resource_group_name  = data.azurerm_resource_group.network.name
+  virtual_network_name = data.azurerm_virtual_network.ad_vnet.name
+}
+
+# ------------------------------------------------------------------------------
+# Application security groups the VM-subnet NSG rules are written against
+# (01-directory/network.tf); each server's NIC joins its own
+# ------------------------------------------------------------------------------
+data "azurerm_application_security_group" "guacamole_asg" {
+  name                = "guacamole-asg"
+  resource_group_name = data.azurerm_resource_group.network.name
+}
+
+data "azurerm_application_security_group" "windows_asg" {
+  name                = "windows-asg"
+  resource_group_name = data.azurerm_resource_group.network.name
+}
+
+data "azurerm_application_security_group" "lubuntu_asg" {
+  name                = "lubuntu-asg"
+  resource_group_name = data.azurerm_resource_group.network.name
+}
+
+# ------------------------------------------------------------------------------
+# Input variable: name of the custom Lubuntu image in Azure
 # ------------------------------------------------------------------------------
 variable "lubuntu_image_name" {
   description = "Name of the custom Azure Linux image"
@@ -102,9 +130,14 @@ variable "lubuntu_image_name" {
 }
 
 # ------------------------------------------------------------------------------
-# Load custom Xubuntu image from the resource group
+# Load custom Lubuntu image from the resource group
 # ------------------------------------------------------------------------------
 data "azurerm_image" "lubuntu_image" {
   name                = var.lubuntu_image_name
-  resource_group_name = data.azurerm_resource_group.lubuntu.name
+  resource_group_name = data.azurerm_resource_group.servers.name
+}
+
+locals {
+  # Base DN derived from the DNS zone (mcloud.mikecloud.com -> DC=mcloud,...).
+  base_dn = join(",", [for p in split(".", var.dns_zone) : "DC=${p}"])
 }

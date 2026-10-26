@@ -45,21 +45,13 @@ variable "user_base_dn" {
   default     = "CN=Users,DC=mcloud,DC=mikecloud,DC=com"
 }
 
-# ------------------------------------------------------------------------------
-# Purpose:
-#   Controls whether Azure Bastion infrastructure is deployed.
-#
-# Behavior:
-#   - true  : Deploy Bastion subnet, NSG, public IP, and Bastion host.
-#   - false : Skip Bastion-related resources entirely.
-#
-# Notes:
-#   - Default is false to avoid unnecessary cost.
-#   - When enabled, dependent resources must use count or for_each logic.
-# ==============================================================================
-
-variable "bastion_support" {
-  description = "Deploy Azure Bastion resources"
-  type        = bool
-  default     = false
+# --------------------------------------------------------------------------------
+# Who may reach the Application Gateway (the only public endpoint)
+# Every sign-in still needs an AD account in mcloud-users; narrow this to your
+# own address with TF_VAR_allowed_cidrs='["203.0.113.7/32"]'.
+# --------------------------------------------------------------------------------
+variable "allowed_cidrs" {
+  description = "Source CIDRs allowed to reach the App Gateway on 80/443"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }

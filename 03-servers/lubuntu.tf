@@ -1,13 +1,14 @@
 # ==============================================================================
-# Linux VM deployment with Ubuntu account (Lubuntu instance)
+# FILE: lubuntu.tf
 # ------------------------------------------------------------------------------
-# Generates secure credentials for the 'ubuntu' user, stores them in Key Vault,
-# allocates a public IP, provisions a NIC, deploys the VM, and assigns the Key
-# Vault Secrets User role to the VM's managed identity.
+# The Lubuntu desktop host: Ubuntu 26.04 with LXQt and XRDP, from the image
+# 02-packer builds. Private (no public IP), joined to the mini-AD with SSSD at
+# boot (scripts/custom_data_lubuntu.sh). Users reach it through Guacamole over
+# RDP (a desktop) or SSH. Admin access is `az vm run-command`.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# Generate a secure random password for the 'ubuntu' account
+# Generate a secure random password for the local 'ubuntu' account
 # ------------------------------------------------------------------------------
 resource "random_password" "ubuntu_password" {
   length           = 24
@@ -29,41 +30,35 @@ resource "azurerm_key_vault_secret" "ubuntu_secret" {
 }
 
 # ------------------------------------------------------------------------------
-# Allocate a public IP address for the Lubuntu VM
-# ------------------------------------------------------------------------------
-resource "azurerm_public_ip" "lubuntu_public_ip" {
-  name                = "lubuntu-public-ip"
-  location            = data.azurerm_resource_group.lubuntu.location
-  resource_group_name = data.azurerm_resource_group.lubuntu.name
-  domain_name_label   = "lubuntu-${random_string.vm_suffix.result}"
-  allocation_method   = "Static"
-  sku                 = "Standard"
-}
-
-# ------------------------------------------------------------------------------
-# Create a NIC for the Lubuntu VM and associate the public IP
+# Private NIC for the Lubuntu VM (no public IP)
 # ------------------------------------------------------------------------------
 resource "azurerm_network_interface" "lubuntu_nic" {
   name                = "lubuntu-nic"
-  location            = data.azurerm_resource_group.lubuntu.location
-  resource_group_name = data.azurerm_resource_group.lubuntu.name
+  location            = data.azurerm_resource_group.servers.location
+  resource_group_name = data.azurerm_resource_group.servers.name
 
   ip_configuration {
     name                          = "internal"
     subnet_id                     = data.azurerm_subnet.vm_subnet.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.lubuntu_public_ip.id
   }
+}
+
+# The VM-subnet NSG admits SSH and RDP to this group from Guacamole only.
+resource "azurerm_network_interface_application_security_group_association" "lubuntu_asg" {
+  network_interface_id          = azurerm_network_interface.lubuntu_nic.id
+  application_security_group_id = data.azurerm_application_security_group.lubuntu_asg.id
 }
 
 # ------------------------------------------------------------------------------
 # Provision the Lubuntu Linux virtual machine
 # ------------------------------------------------------------------------------
 resource "azurerm_linux_virtual_machine" "lubuntu_instance" {
+  # Also the hostname, and so the AD computer object name on join (<= 15 chars).
   name                = "lubuntu-${random_string.vm_suffix.result}"
-  location            = data.azurerm_resource_group.lubuntu.location
-  resource_group_name = data.azurerm_resource_group.lubuntu.name
-  size                = "Standard_D4s_v3"
+  location            = data.azurerm_resource_group.servers.location
+  resource_group_name = data.azurerm_resource_group.servers.name
+  size                = "Standard_D2s_v3" # a desktop session per user
   admin_username      = "ubuntu"
   admin_password      = random_password.ubuntu_password.result
   disable_password_authentication = false
@@ -83,15 +78,13 @@ resource "azurerm_linux_virtual_machine" "lubuntu_instance" {
     storage_account_uri = null
   }
 
+  # Changing custom_data replaces the VM on azurerm, so a new script never runs
+  # against a host that already joined with the old one.
   custom_data = base64encode(templatefile(
-    "./scripts/custom_data.sh",
+    "./scripts/custom_data_lubuntu.sh",
     {
-      vault_name      = data.azurerm_key_vault.ad_key_vault.name
-      domain_fqdn     = var.dns_zone
-      netbios         = var.netbios
-      force_group     = "mcloud-users"
-      realm           = var.realm
-      storage_account = azurerm_storage_account.nfs_storage_account.name
+      vault_name  = data.azurerm_key_vault.ad_key_vault.name
+      domain_fqdn = var.dns_zone
     }
   ))
 
@@ -101,7 +94,8 @@ resource "azurerm_linux_virtual_machine" "lubuntu_instance" {
 }
 
 # ------------------------------------------------------------------------------
-# Grant the VM identity permission to read Key Vault secrets
+# Grant the VM identity permission to read Key Vault secrets (the domain join
+# credential). The boot script retries until this assignment has propagated.
 # ------------------------------------------------------------------------------
 resource "azurerm_role_assignment" "vm_lnx_key_vault_secrets_user" {
   scope                = data.azurerm_key_vault.ad_key_vault.id

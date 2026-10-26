@@ -20,8 +20,8 @@ resource "random_string" "storage_name" {
 # ------------------------------------------------------------------------------
 resource "azurerm_storage_account" "scripts_storage" {
   name                     = "vmscripts${random_string.storage_name.result}" # Unique name
-  resource_group_name      = data.azurerm_resource_group.lubuntu.name
-  location                 = data.azurerm_resource_group.lubuntu.location
+  resource_group_name      = data.azurerm_resource_group.servers.name
+  location                 = data.azurerm_resource_group.servers.location
   account_tier             = "Standard"  # Cost-effective storage
   account_replication_type = "LRS"       # Local redundancy
 }
@@ -37,13 +37,12 @@ resource "azurerm_storage_container" "scripts" {
 
 # ------------------------------------------------------------------------------
 # Render AD join PowerShell script from template
-# - Injects Key Vault name, domain, and NFS gateway values
+# - Injects Key Vault name and domain
 # ------------------------------------------------------------------------------
 locals {
   ad_join_script = templatefile("./scripts/ad_join.ps1.template", {
     vault_name  = data.azurerm_key_vault.ad_key_vault.name
-    domain_fqdn = "mcloud.mikecloud.com"
-    nfs_gateway = azurerm_network_interface.lubuntu_nic.ip_configuration[0].private_ip_address
+    domain_fqdn = var.dns_zone
   })
 }
 
@@ -60,8 +59,7 @@ resource "local_file" "ad_join_rendered" {
 # ------------------------------------------------------------------------------
 resource "azurerm_storage_blob" "ad_join_script" {
   name                   = "ad-join.ps1"
-  storage_account_name   = azurerm_storage_account.scripts_storage.name
-  storage_container_name = azurerm_storage_container.scripts.name
+  storage_container_id   = azurerm_storage_container.scripts.id
   type                   = "Block" # Block blob for discrete files
   source                 = local_file.ad_join_rendered.filename
 

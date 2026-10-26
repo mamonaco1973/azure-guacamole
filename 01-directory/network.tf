@@ -1,8 +1,11 @@
 # ==================================================================================================
-# Virtual Network, Subnets, and Network Security Group
-# - Creates VNet with dedicated subnets for VMs, mini-AD, and Bastion
-# - Configures NSG to allow SSH and RDP
-# - Associates NSG with VM subnet
+# Virtual Network, Subnets, Network Security Groups and NAT Gateway
+# - VNet with three subnets: servers (Guacamole, Windows, Lubuntu), mini-AD,
+#   and a dedicated subnet for the Application Gateway
+# - NSGs mirror the AWS security groups:
+#     internet ─443/80─▶ App Gateway ─8080─▶ Guacamole ─3389─────▶ Windows
+#                                                      └─22, 3389─▶ Lubuntu
+# - NAT gateway gives the private VMs outbound internet; no VM has a public IP
 # ==================================================================================================
 
 # --------------------------------------------------------------------------------------------------
@@ -38,49 +41,98 @@ resource "azurerm_subnet" "mini_ad_subnet" {
 }
 
 # --------------------------------------------------------------------------------------------------
-# Define Network Security Group (NSG) for VM subnet
+# Define App Gateway Subnet (10.0.1.0/24)
+# Application Gateway v2 needs a subnet of its own: nothing else may be placed in it.
+# --------------------------------------------------------------------------------------------------
+resource "azurerm_subnet" "app_gateway_subnet" {
+  name                 = "app-gateway-subnet"
+  resource_group_name  = azurerm_resource_group.ad.name
+  virtual_network_name = azurerm_virtual_network.ad_vnet.name
+  address_prefixes     = ["10.0.1.0/24"]
+}
+
+# --------------------------------------------------------------------------------------------------
+# Application Security Groups: one per server role, so the VM-subnet rules read
+# "Guacamole -> Windows" instead of IP addresses. The NICs join them in 03-servers.
+# --------------------------------------------------------------------------------------------------
+resource "azurerm_application_security_group" "guacamole_asg" {
+  name                = "guacamole-asg"
+  location            = azurerm_resource_group.ad.location
+  resource_group_name = azurerm_resource_group.ad.name
+}
+
+resource "azurerm_application_security_group" "windows_asg" {
+  name                = "windows-asg"
+  location            = azurerm_resource_group.ad.location
+  resource_group_name = azurerm_resource_group.ad.name
+}
+
+resource "azurerm_application_security_group" "lubuntu_asg" {
+  name                = "lubuntu-asg"
+  location            = azurerm_resource_group.ad.location
+  resource_group_name = azurerm_resource_group.ad.name
+}
+
+# --------------------------------------------------------------------------------------------------
+# NSG for the VM subnet
+# Azure's default rules allow everything inside the VNet, so an explicit deny at
+# the end makes the allow rules above it the only way in, as AWS security groups do.
 # --------------------------------------------------------------------------------------------------
 resource "azurerm_network_security_group" "vm_nsg" {
   name                = "vm-nsg"
   location            = azurerm_resource_group.ad.location
   resource_group_name = azurerm_resource_group.ad.name
 
-  # Allow inbound SSH (Linux admin access)
+  # App Gateway -> Guacamole web app (Tomcat)
   security_rule {
-    name                       = "Allow-SSH"
-    priority                   = 1001
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+    name                                       = "AppGateway-to-Guacamole"
+    priority                                   = 1001
+    direction                                  = "Inbound"
+    access                                     = "Allow"
+    protocol                                   = "Tcp"
+    source_port_range                          = "*"
+    destination_port_range                     = "8080"
+    source_address_prefix                      = azurerm_subnet.app_gateway_subnet.address_prefixes[0]
+    destination_application_security_group_ids = [azurerm_application_security_group.guacamole_asg.id]
   }
 
-  # Allow inbound RDP (Windows admin access)
+  # Guacamole -> Windows RDP
   security_rule {
-    name                       = "Allow-RDP"
-    priority                   = 1002
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "3389"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+    name                                       = "Guacamole-to-Windows-RDP"
+    priority                                   = 1002
+    direction                                  = "Inbound"
+    access                                     = "Allow"
+    protocol                                   = "Tcp"
+    source_port_range                          = "*"
+    destination_port_range                     = "3389"
+    source_application_security_group_ids      = [azurerm_application_security_group.guacamole_asg.id]
+    destination_application_security_group_ids = [azurerm_application_security_group.windows_asg.id]
   }
 
-  # Allow inbound SMB (AD and file share access)
+  # Guacamole -> Lubuntu SSH and XRDP
   security_rule {
-    name                       = "Allow-SMB"
-    priority                   = 1003
+    name                                       = "Guacamole-to-Lubuntu"
+    priority                                   = 1003
+    direction                                  = "Inbound"
+    access                                     = "Allow"
+    protocol                                   = "Tcp"
+    source_port_range                          = "*"
+    destination_port_ranges                    = ["22", "3389"]
+    source_application_security_group_ids      = [azurerm_application_security_group.guacamole_asg.id]
+    destination_application_security_group_ids = [azurerm_application_security_group.lubuntu_asg.id]
+  }
+
+  # Everything else from inside the VNet (overrides the default AllowVnetInBound).
+  # Replies to the servers' own outbound traffic (AD, NAT) are stateful and unaffected.
+  security_rule {
+    name                       = "Deny-VNet-Inbound"
+    priority                   = 4000
     direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
+    access                     = "Deny"
+    protocol                   = "*"
     source_port_range          = "*"
-    destination_port_range     = "445"
-    source_address_prefix      = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "*"
   }
 }
@@ -91,6 +143,64 @@ resource "azurerm_network_security_group" "vm_nsg" {
 resource "azurerm_subnet_network_security_group_association" "vm_nsg_assoc" {
   subnet_id                 = azurerm_subnet.vm_subnet.id
   network_security_group_id = azurerm_network_security_group.vm_nsg.id
+}
+
+# --------------------------------------------------------------------------------------------------
+# NSG for the App Gateway subnet
+# The v2 SKU refuses to deploy unless GatewayManager can reach 65200-65535
+# (its control plane) and the AzureLoadBalancer probe is allowed.
+# --------------------------------------------------------------------------------------------------
+resource "azurerm_network_security_group" "app_gateway_nsg" {
+  name                = "app-gateway-nsg"
+  location            = azurerm_resource_group.ad.location
+  resource_group_name = azurerm_resource_group.ad.name
+
+  # Users -> HTTPS (and HTTP, which redirects to HTTPS)
+  security_rule {
+    name                       = "Allow-Web"
+    priority                   = 1001
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["80", "443"]
+    source_address_prefixes    = var.allowed_cidrs
+    destination_address_prefix = "*"
+  }
+
+  # Azure infrastructure -> App Gateway v2 control plane (required)
+  security_rule {
+    name                       = "Allow-GatewayManager"
+    priority                   = 1002
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "65200-65535"
+    source_address_prefix      = "GatewayManager"
+    destination_address_prefix = "*"
+  }
+
+  # Azure load balancer health probe (required)
+  security_rule {
+    name                       = "Allow-AzureLoadBalancer"
+    priority                   = 1003
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "AzureLoadBalancer"
+    destination_address_prefix = "*"
+  }
+}
+
+# --------------------------------------------------------------------------------------------------
+# Associate NSG with App Gateway subnet
+# --------------------------------------------------------------------------------------------------
+resource "azurerm_subnet_network_security_group_association" "app_gateway_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.app_gateway_subnet.id
+  network_security_group_id = azurerm_network_security_group.app_gateway_nsg.id
 }
 
 # --------------------------------------------------------------------------------------------------

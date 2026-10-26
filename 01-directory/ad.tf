@@ -8,7 +8,8 @@
 # ==========================================================================================
 
 module "mini_ad" {
-  source            = "github.com/mamonaco1973/module-azure-mini-ad" # Path to the mini-ad Terraform module
+  # TEMPORARY: feature/ca-pem adds the /ca.pem route; back to main once merged
+  source            = "github.com/mamonaco1973/module-azure-mini-ad?ref=feature/ca-pem"
   location          = var.network_group_location                     # Azure region (from input variable)
   netbios           = var.netbios                                    # NetBIOS domain name (e.g., MCLOUD)
   vnet_id           = azurerm_virtual_network.ad_vnet.id             # Virtual Network where the AD will reside

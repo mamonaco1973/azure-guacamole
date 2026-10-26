@@ -1,9 +1,18 @@
 #!/bin/bash
+# ==============================================================================
+# check_env.sh - Environment validation
+# ------------------------------------------------------------------------------
+#   - Required CLI tools are on PATH (az, terraform, packer, jq, curl).
+#   - ARM_* service principal variables are set (Terraform and Packer use them).
+#   - Logs the Azure CLI in as that service principal.
+# ==============================================================================
+
+set -euo pipefail
 
 echo "NOTE: Validating that required commands are found in your PATH."
 
 # List of required commands
-commands=("az" "terraform" "jq" "packer")
+commands=("az" "terraform" "packer" "jq" "curl")
 
 # Flag to track if all commands are found
 all_found=true
@@ -35,7 +44,7 @@ all_set=true
 
 # Loop through the required variables and check if they are set
 for var in "${required_vars[@]}"; do
-  if [ -z "${!var}" ]; then
+  if [ -z "${!var:-}" ]; then
     echo "ERROR: $var is not set or is empty."
     all_set=false
   else
@@ -52,10 +61,8 @@ else
 fi
 
 echo "NOTE: Logging in to Azure using Service Principal..."
-az login --service-principal --username "$ARM_CLIENT_ID" --password "$ARM_CLIENT_SECRET" --tenant "$ARM_TENANT_ID" > /dev/null 2>&1
-
-# Check the return code of the login command
-if [ $? -ne 0 ]; then
+if ! az login --service-principal --username "$ARM_CLIENT_ID" \
+    --password "$ARM_CLIENT_SECRET" --tenant "$ARM_TENANT_ID" > /dev/null 2>&1; then
   echo "ERROR: Failed to log into Azure. Please check your credentials and environment variables."
   exit 1
 else

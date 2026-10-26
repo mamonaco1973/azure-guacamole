@@ -2,7 +2,8 @@
 # Windows VM deployment with admin user (Active Directory instance)
 # ------------------------------------------------------------------------------
 # Generates secure credentials for 'adminuser', stores them in Key Vault,
-# provisions NIC and VM, creates a public IP, and runs an AD join script.
+# provisions a private NIC and the VM, and runs an AD join script. No public
+# IP: users reach it through Guacamole over RDP; admins use az vm run-command.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -37,32 +38,24 @@ resource "azurerm_key_vault_secret" "win_adminuser_secret" {
 }
 
 # ------------------------------------------------------------------------------
-# Create a public IP address for the Windows VM
-# - Static IPv4 address with domain label for convenience
-# ------------------------------------------------------------------------------
-resource "azurerm_public_ip" "windows_vm_public_ip" {
-  name                = "windows-vm-public-ip"
-  location            = data.azurerm_resource_group.lubuntu.location
-  resource_group_name = data.azurerm_resource_group.lubuntu.name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  domain_name_label   = "win-ad-${random_string.vm_suffix.result}"
-}
-
-# ------------------------------------------------------------------------------
-# Create a NIC for the Windows VM and associate the public IP
+# Private NIC for the Windows VM (no public IP)
 # ------------------------------------------------------------------------------
 resource "azurerm_network_interface" "windows_vm_nic" {
   name                = "windows-vm-nic"
-  location            = data.azurerm_resource_group.lubuntu.location
-  resource_group_name = data.azurerm_resource_group.lubuntu.name
+  location            = data.azurerm_resource_group.servers.location
+  resource_group_name = data.azurerm_resource_group.servers.name
 
   ip_configuration {
     name                          = "internal"
     subnet_id                     = data.azurerm_subnet.vm_subnet.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.windows_vm_public_ip.id
   }
+}
+
+# The VM-subnet NSG admits RDP to this group from Guacamole only.
+resource "azurerm_network_interface_application_security_group_association" "windows_asg" {
+  network_interface_id          = azurerm_network_interface.windows_vm_nic.id
+  application_security_group_id = data.azurerm_application_security_group.windows_asg.id
 }
 
 # ------------------------------------------------------------------------------
@@ -70,8 +63,8 @@ resource "azurerm_network_interface" "windows_vm_nic" {
 # ------------------------------------------------------------------------------
 resource "azurerm_windows_virtual_machine" "windows_ad_instance" {
   name                = "win-ad-${random_string.vm_suffix.result}"
-  location            = data.azurerm_resource_group.lubuntu.location
-  resource_group_name = data.azurerm_resource_group.lubuntu.name
+  location            = data.azurerm_resource_group.servers.location
+  resource_group_name = data.azurerm_resource_group.servers.name
   
   size                = "Standard_DS1_v2" # Small size for demos
   admin_username      = "adminuser"
@@ -130,8 +123,7 @@ resource "azurerm_virtual_machine_extension" "join_script" {
   SETTINGS
 
   depends_on = [
-    azurerm_role_assignment.vm_win_key_vault_secrets_user,
-    azurerm_linux_virtual_machine.lubuntu_instance
+    azurerm_role_assignment.vm_win_key_vault_secrets_user
   ]
 }
 

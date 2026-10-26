@@ -1,11 +1,14 @@
 # ==============================================================================
-# Packer Build: Lubuntu Image for Azure (Ubuntu 24.04 LTS)
-#------------------------------------------------------------------------------
-# Purpose:
-#   - Builds a custom Azure Managed Image with Lubuntu and XRDP
-#   - Starts from Canonical Ubuntu 24.04 LTS
-#   - Installs desktop env, tools, browsers, and dev utilities
-#   - Produces a timestamped image for VM or VMSS deployments
+# lubuntu.pkr.hcl -- Ubuntu 26.04 + Lubuntu core (LXQt) + XRDP + SSSD packages
+# ==============================================================================
+# Builds the managed image for the private desktop host that Guacamole reaches
+# over RDP and SSH. The image holds the slow, generic part (desktop, XRDP,
+# Firefox, the SSSD/realmd packages). The domain join happens at boot in
+# custom data (03-servers/scripts/custom_data_lubuntu.sh): a computer account
+# and keytab are per machine and must never be baked into a shared image.
+#
+# Packer creates its own temporary VNet and public IP for the build VM, so the
+# build does not depend on the phase-1 network.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -81,7 +84,7 @@ source "azure-arm" "lubuntu_image" {
   tenant_id       = var.tenant_id
 
   image_publisher = "Canonical"
-  image_offer     = "ubuntu-24_04-lts"
+  image_offer     = "ubuntu-26_04-lts"
   image_sku       = "server"
   image_version   = "latest"
 
@@ -93,7 +96,7 @@ source "azure-arm" "lubuntu_image" {
   managed_image_name = "lubuntu_image_${local.timestamp}"
   managed_image_resource_group_name = var.resource_group
   managed_image_storage_account_type = "Premium_LRS"
-  os_disk_size_gb                    = 256
+  os_disk_size_gb                    = 30
 }
 
 # ------------------------------------------------------------------------------
@@ -103,93 +106,18 @@ source "azure-arm" "lubuntu_image" {
 build {
   sources = ["source.azure-arm.lubuntu_image"]
 
-  # Base packages
   provisioner "shell" {
-    script          = "./packages.sh"
+    script          = "./scripts/01-packages.sh"
     execute_command = "sudo -E bash '{{.Path}}'"
   }
 
-  # Lubuntu desktop
   provisioner "shell" {
-    script          = "./lubuntu.sh"
+    script          = "./scripts/02-desktop.sh"
     execute_command = "sudo -E bash '{{.Path}}'"
   }
 
-  # XRDP
   provisioner "shell" {
-    script          = "./xrdp.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Chrome
-  provisioner "shell" {
-    script          = "./chrome.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Firefox
-  provisioner "shell" {
-    script          = "./firefox.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # VS Code
-  provisioner "shell" {
-    script          = "./vscode.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # HashiCorp tools
-  provisioner "shell" {
-    script          = "./hashicorp.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # AWS CLI
-  provisioner "shell" {
-    script          = "./awscli.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Azure CLI
-  provisioner "shell" {
-    script          = "./azcli.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Google Cloud CLI
-  provisioner "shell" {
-    script          = "./gcloudcli.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Docker
-  provisioner "shell" {
-    script          = "./docker.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Postman
-  provisioner "shell" {
-    script          = "./postman.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # KRDC
-  provisioner "shell" {
-    script          = "./krdc.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # OnlyOffice
-  provisioner "shell" {
-    script          = "./onlyoffice.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Desktop icons
-  provisioner "shell" {
-    script          = "./desktop.sh"
+    script          = "./scripts/03-xrdp.sh"
     execute_command = "sudo -E bash '{{.Path}}'"
   }
 }
