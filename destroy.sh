@@ -23,9 +23,12 @@ PROJECT_RG="guacamole-project-rg"
 ./check_env.sh
 
 # Resources a Terraform directory still tracks (0 when none or no state).
+# A failed init (e.g. the provider registry unreachable) stops the script:
+# counting it as 0 would skip a phase that still has resources.
 tracked() {
-  (cd "$1" && terraform init -input=false >/dev/null &&
-    terraform state list 2>/dev/null | wc -l) || echo 0
+  (cd "$1" && terraform init -input=false >/dev/null) ||
+    { echo "ERROR: terraform init failed in $1; stopping rather than skipping it. Re-run ./destroy.sh." >&2; return 1; }
+  (cd "$1" && terraform state list 2>/dev/null | wc -l)
 }
 
 # ------------------------------------------------------------------------------
@@ -34,7 +37,9 @@ tracked() {
 # Its data sources need the vault and image names, so look them up while
 # they still exist.
 # ------------------------------------------------------------------------------
-if [ "$(tracked 03-servers)" -gt 0 ]; then
+# Assigned first: set -e ignores a failure inside "[ $(...) ]", but not here.
+count=$(tracked 03-servers)
+if [ "${count}" -gt 0 ]; then
   echo "NOTE: Destroying the App Gateway, Guacamole and servers..."
   lubuntu_image_name=$(az image list --resource-group "${PROJECT_RG}" \
     --query "[?starts_with(name, 'lubuntu_image')]|sort_by(@, &name)[-1].name" \
@@ -69,7 +74,8 @@ fi
 # ------------------------------------------------------------------------------
 # Phase 3: destroy the directory layer (mini-AD, Key Vault, network)
 # ------------------------------------------------------------------------------
-if [ "$(tracked 01-directory)" -gt 0 ]; then
+count=$(tracked 01-directory)
+if [ "${count}" -gt 0 ]; then
   echo "NOTE: Destroying the mini-AD, Key Vault and network..."
   cd 01-directory
   terraform destroy -auto-approve
