@@ -14,6 +14,10 @@ provider "azurerm" {
     key_vault {
       purge_soft_delete_on_destroy    = true  # Purge Key Vaults on destroy
       recover_soft_deleted_key_vaults = false # Do not auto-recover deleted vaults
+
+      # The App Gateway's certificate lives in the phase-1 vault; purge it on
+      # destroy so a rebuild can reuse the name.
+      purge_soft_deleted_certificates_on_destroy = true
     }
   }
 }

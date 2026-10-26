@@ -9,8 +9,8 @@
 # Notes:
 #   - Idempotent: each phase is skipped when there is nothing left to
 #     destroy, so a re-run after a partial failure picks up where it stopped.
-#   - Key Vault has purge protection off and the provider purges it on
-#     destroy, so a rebuild can reuse the name.
+#   - Key Vault has purge protection off and the provider purges it (and the
+#     App Gateway certificate) on destroy, so a rebuild can reuse the names.
 #   - This permanently deletes everything the lab created.
 # ==============================================================================
 

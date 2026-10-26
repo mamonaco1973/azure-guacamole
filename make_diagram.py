@@ -112,7 +112,7 @@ NODES.update({
     "guac":     (COL[1], ROW[1], "amber", "layers", "Guacamole",
                  "guacd + web app, private VM"),
     "secrets":  (COL[2], ROW[1], "store", "key", "Key Vault",
-                 "AD credentials, LDAP bind password"),
+                 "AD credentials, gateway cert"),
     "windows":  (COL[0], ROW[2], "blue", "monitor", "Windows Server 2022",
                  "private, RDP from Guacamole only"),
     "linux":    (COL[2], ROW[2], "blue", "monitor", "Lubuntu 26.04",

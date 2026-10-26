@@ -111,6 +111,4 @@ Sign in  : jsmith / ${JSMITH}
            as <user>-credentials)
 Connect  : Windows (RDP), Lubuntu (RDP desktop) and Lubuntu (SSH),
            as the signed-in user.
-           Windows needs ~10 minutes after deploy to join the
-           domain and reboot before RDP accepts domain logins.
 EOF

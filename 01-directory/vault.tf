@@ -45,3 +45,14 @@ resource "azurerm_role_assignment" "kv_role_assignment" {
   role_definition_name = "Key Vault Secrets Officer"                  # Predefined Azure RBAC role
   principal_id         = data.azurerm_client_config.current.object_id # Current client identity
 }
+
+# --------------------------------------------------------------------------------------------------
+# Role Assignment: Grant current client permission to manage certificates
+# Role: "Key Vault Certificates Officer" → 03-servers creates the App Gateway's self-signed
+# HTTPS certificate in this vault. Granted here, in phase 1, so it has long propagated by then.
+# --------------------------------------------------------------------------------------------------
+resource "azurerm_role_assignment" "kv_cert_role_assignment" {
+  scope                = azurerm_key_vault.ad_key_vault.id
+  role_definition_name = "Key Vault Certificates Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
